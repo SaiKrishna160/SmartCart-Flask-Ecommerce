@@ -1,0 +1,1 @@
+/admin/update-item/<int:item_id>
