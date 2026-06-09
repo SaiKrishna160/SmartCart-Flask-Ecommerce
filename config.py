@@ -9,10 +9,12 @@
 SECRET_KEY = "CHANTI"  # used for sessions
 
 # MySQL Database Configuration
-DB_HOST = "localhost"
-DB_USER = "root"
-DB_PASSWORD = "Root"  # keep empty if no password
-DB_NAME = "smartcart_db"
+import os
+
+DB_HOST = os.getenv("DB_HOST")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("DB_NAME")
 
 
 # config.py
