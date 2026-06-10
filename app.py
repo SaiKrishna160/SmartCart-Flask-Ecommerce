@@ -134,6 +134,11 @@ def admin_signup():
     otp = random.randint(100000, 999999)
     session['otp']          = otp
     session['otp_created']  = time.time()
+    
+    print(f"OTP = {otp}")
+    flash(f"OTP is {otp}", "success")
+    
+    return redirect('/verify-otp')
 
     msg = Message(
         subject="SmartCart Admin OTP",
