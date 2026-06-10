@@ -61,10 +61,12 @@ OTP_EXPIRY_SECONDS = 300  # 5 minutes
 def get_db_connection():
     """Return a fresh MySQL connection."""
     return mysql.connector.connect(
-        host=config.DB_HOST,
-        user=config.DB_USER,
-        password=config.DB_PASSWORD,
-        database=config.DB_NAME
+    host=config.DB_HOST,
+    user=config.DB_USER,
+    password=config.DB_PASSWORD,
+    database=config.DB_NAME,
+    port=config.DB_PORT
+)
     )
 
 
