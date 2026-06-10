@@ -67,7 +67,7 @@ def get_db_connection():
     database=config.DB_NAME,
     port=config.DB_PORT
 )
-    )
+    
 
 
 def is_admin_logged_in():
