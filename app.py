@@ -24,7 +24,9 @@ razorpay_client = razorpay.Client(
     auth=(config.RAZORPAY_KEY_ID, config.RAZORPAY_KEY_SECRET)
 )
 
-app.secret_key = config.SECRET_KEY
+import os
+
+app.secret_key = os.getenv("SECRET_KEY")
 
 # ─────────────────────────────────────────────────────────
 # EMAIL CONFIGURATION
