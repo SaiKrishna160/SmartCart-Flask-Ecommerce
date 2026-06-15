@@ -1,6 +1,7 @@
 # app.py
 # ---------------------------------------------------------
-# SmartCart — Full Flask E-Commerce App 
+# SmartCart — Full Flask E-Commerce App (FULLY CORRECTED)
+# Combined Login: Auto-detects Admin or User by email
 # ---------------------------------------------------------
 
 from flask import Flask, render_template, request, redirect, session, flash, jsonify
@@ -30,7 +31,8 @@ app.secret_key = config.SECRET_KEY
 # ─────────────────────────────────────────────────────────
 app.config['MAIL_SERVER']   = config.MAIL_SERVER
 app.config['MAIL_PORT']     = config.MAIL_PORT
-app.config['MAIL_USE_TLS']  = config.MAIL_USE_TLS
+app.config['MAIL_USE_TLS']  = True
+app.config['MAIL_USE_SSL']  = False
 app.config['MAIL_USERNAME'] = config.MAIL_USERNAME
 app.config['MAIL_PASSWORD'] = config.MAIL_PASSWORD
 
@@ -40,7 +42,7 @@ mail = Mail(app)
 # UPLOAD FOLDER CONFIGURATION
 # ─────────────────────────────────────────────────────────
 PRODUCT_UPLOAD_FOLDER = 'static/uploads/product_images'
-ADMIN_UPLOAD_FOLDER   = 'static/uploads/admin_images'   # ✅ FIX: was missing in original
+ADMIN_UPLOAD_FOLDER   = 'static/uploads/admin_images'
 
 app.config['UPLOAD_FOLDER']       = PRODUCT_UPLOAD_FOLDER
 app.config['ADMIN_UPLOAD_FOLDER'] = ADMIN_UPLOAD_FOLDER
@@ -59,52 +61,111 @@ OTP_EXPIRY_SECONDS = 300  # 5 minutes
 # =================================================================
 
 def get_db_connection():
-    """Return a fresh MySQL connection."""
     return mysql.connector.connect(
-    host=config.DB_HOST,
-    user=config.DB_USER,
-    password=config.DB_PASSWORD,
-    database=config.DB_NAME,
-    port=config.DB_PORT
-)
-    
+        host='127.0.0.1',
+        port=3306,
+        user='root',
+        password='Root',
+        database='smartcart'
+    )
 
 
 def is_admin_logged_in():
-    """Return True if an admin session exists."""
     return 'admin_id' in session
 
 
 def is_user_logged_in():
-    """Return True if a user session exists."""
     return 'user_id' in session
 
 
 def hash_password(plain_password: str) -> bytes:
-    """Hash a plaintext password with bcrypt."""
     return bcrypt.hashpw(plain_password.encode('utf-8'), bcrypt.gensalt())
 
 
 def check_password(plain_password: str, hashed) -> bool:
-    """
-    Safely compare a plain password against a bcrypt hash.
-    Accepts the hash as str or bytes.
-    """
     if isinstance(hashed, str):
         hashed = hashed.encode('utf-8')
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed)
 
 
 # =================================================================
-# ROUTE 0: ROOT — Redirect to Login
+# ROUTE 0: ROOT — Redirect to Combined Login
 # =================================================================
 @app.route('/')
 def home():
-    return redirect('/admin-login')
+    return redirect('/login')
 
 
 # =================================================================
-# ROUTE 1: ADMIN SIGNUP — Send OTP
+# ROUTE 1: COMBINED LOGIN — Auto-detects Admin or User by email
+# =================================================================
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+
+    if request.method == 'GET':
+        return render_template('login.html')
+
+    email    = request.form['email'].strip().lower()
+    password = request.form['password']
+
+    conn   = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    # Step 1: Check admin table first
+    cursor.execute("SELECT * FROM admin WHERE email=%s", (email,))
+    admin = cursor.fetchone()
+
+    if admin:
+        # Email found in admin table
+        if not check_password(password, admin['password']):
+            cursor.close()
+            conn.close()
+            flash("Incorrect password!", "danger")
+            return redirect('/login')
+
+        session['admin_id']    = admin['admin_id']
+        session['admin_name']  = admin['name']
+        session['admin_email'] = admin['email']
+
+        cursor.close()
+        conn.close()
+        flash(f"Welcome Admin, {admin['name']}!", "success")
+        return redirect('/admin-dashboard')
+
+    # Step 2: Check users table
+    cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not user:
+        flash("Email not found! Please register first.", "danger")
+        return redirect('/login')
+
+    if not check_password(password, user['password']):
+        flash("Incorrect password!", "danger")
+        return redirect('/login')
+
+    session['user_id']    = user['user_id']
+    session['user_name']  = user['name']
+    session['user_email'] = user['email']
+
+    flash(f"Welcome, {user['name']}!", "success")
+    return redirect('/user-dashboard')
+
+
+# =================================================================
+# ROUTE 2: LOGOUT (works for both admin and user)
+# =================================================================
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash("Logged out successfully.", "success")
+    return redirect('/login')
+
+
+# =================================================================
+# ROUTE 3: ADMIN SIGNUP — Send OTP
 # =================================================================
 @app.route('/admin-signup', methods=['GET', 'POST'])
 def admin_signup():
@@ -126,39 +187,37 @@ def admin_signup():
         flash("This email is already registered. Please login instead.", "danger")
         return redirect('/admin-signup')
 
-    # Store signup data in session
     session['signup_name']  = name
     session['signup_email'] = email
 
-    # Generate OTP with timestamp  ✅ FIX: OTP now has expiry
     otp = random.randint(100000, 999999)
-    session['otp']          = otp
-    session['otp_created']  = time.time()
-    
-    print(f"OTP = {otp}")
-    flash(f"OTP is {otp}", "success")
-    
-    return redirect('/verify-otp')
+    session['otp']         = otp
+    session['otp_created'] = time.time()
 
-    msg = Message(
-        subject="SmartCart Admin OTP",
-        sender=config.MAIL_USERNAME,
-        recipients=[email]
-    )
-    msg.body = (
-        f"Hello {name},\n\n"
-        f"Your OTP for SmartCart Admin Registration is: {otp}\n"
-        f"This OTP is valid for {OTP_EXPIRY_SECONDS // 60} minutes.\n\n"
-        f"If you did not request this, please ignore this email."
-    )
-    mail.send(msg)
+    # ✅ Send email BEFORE redirect
+    try:
+        msg = Message(
+            subject="SmartCart Admin OTP",
+            sender=config.MAIL_USERNAME,
+            recipients=[email]
+        )
+        msg.body = (
+            f"Hello {name},\n\n"
+            f"Your OTP for SmartCart Admin Registration is: {otp}\n"
+            f"This OTP is valid for {OTP_EXPIRY_SECONDS // 60} minutes.\n\n"
+            f"If you did not request this, please ignore this email."
+        )
+        mail.send(msg)
+        flash("OTP sent to your email! Please check your inbox.", "success")
+    except Exception as e:
+        flash(f"Failed to send OTP. Error: {str(e)}", "danger")
+        return redirect('/admin-signup')
 
-    flash("OTP sent to your email!", "success")
     return redirect('/verify-otp')
 
 
 # =================================================================
-# ROUTE 2: DISPLAY OTP PAGE
+# ROUTE 4: DISPLAY OTP PAGE
 # =================================================================
 @app.route('/verify-otp', methods=['GET'])
 def verify_otp_get():
@@ -166,7 +225,7 @@ def verify_otp_get():
 
 
 # =================================================================
-# ROUTE 3: VERIFY OTP + SAVE ADMIN
+# ROUTE 5: VERIFY OTP + SAVE ADMIN
 # =================================================================
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp_post():
@@ -174,7 +233,6 @@ def verify_otp_post():
     user_otp = request.form.get('otp', '').strip()
     password = request.form.get('password', '')
 
-    # ✅ FIX: Check OTP expiry
     otp_created = session.get('otp_created', 0)
     if time.time() - otp_created > OTP_EXPIRY_SECONDS:
         flash("OTP has expired. Please sign up again.", "danger")
@@ -198,74 +256,24 @@ def verify_otp_post():
     cursor.close()
     conn.close()
 
-    # Clear temporary session keys
     for key in ('otp', 'otp_created', 'signup_name', 'signup_email'):
         session.pop(key, None)
 
-    flash("Admin Registered Successfully!", "success")
-    return redirect('/admin-login')
+    flash("Admin Registered Successfully! Please login.", "success")
+    return redirect('/login')
 
 
 # =================================================================
-# ROUTE 4: ADMIN LOGIN
-# =================================================================
-@app.route('/admin-login', methods=['GET', 'POST'])
-def admin_login():
-
-    if request.method == 'GET':
-        return render_template('admin/admin_login.html')
-
-    email    = request.form['email'].strip().lower()
-    password = request.form['password']
-
-    conn   = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM admin WHERE email=%s", (email,))
-    admin = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not admin:
-        flash("Email not found! Please register first.", "danger")
-        return redirect('/admin-login')
-
-    # ✅ FIX: use helper that handles str/bytes safely
-    if not check_password(password, admin['password']):
-        flash("Incorrect password! Try again.", "danger")
-        return redirect('/admin-login')
-
-    session['admin_id']    = admin['admin_id']
-    session['admin_name']  = admin['name']
-    session['admin_email'] = admin['email']
-
-    flash("Login Successful!", "success")
-    return redirect('/admin-dashboard')
-
-
-# =================================================================
-# ROUTE 5: ADMIN DASHBOARD (Protected)
+# ROUTE 6: ADMIN DASHBOARD (Protected)
 # =================================================================
 @app.route('/admin-dashboard')
 def admin_dashboard():
 
     if not is_admin_logged_in():
         flash("Please login to access dashboard!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     return render_template('admin/dashboard.html', admin_name=session['admin_name'])
-
-
-# =================================================================
-# ROUTE 6: ADMIN LOGOUT
-# =================================================================
-@app.route('/admin-logout')
-def admin_logout():
-
-    for key in ('admin_id', 'admin_name', 'admin_email'):
-        session.pop(key, None)
-
-    flash("Logged out successfully.", "success")
-    return redirect('/admin-login')
 
 
 # =================================================================
@@ -276,7 +284,7 @@ def add_item():
 
     if not is_admin_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     if request.method == 'GET':
         return render_template('admin/add_item.html')
@@ -317,7 +325,7 @@ def item_list():
 
     if not is_admin_logged_in():
         flash("Please login!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     search          = request.args.get('search', '').strip()
     category_filter = request.args.get('category', '').strip()
@@ -360,7 +368,7 @@ def view_item(item_id):
 
     if not is_admin_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -384,7 +392,7 @@ def update_item(item_id):
 
     if not is_admin_logged_in():
         flash("Please login!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -402,14 +410,13 @@ def update_item(item_id):
         conn.close()
         return render_template('admin/update_item.html', product=product)
 
-    # POST
     name        = request.form['name'].strip()
     description = request.form['description'].strip()
     category    = request.form['category'].strip()
     price       = request.form['price']
     new_image   = request.files.get('image')
 
-    old_image_name  = product['image']
+    old_image_name   = product['image']
     final_image_name = old_image_name
 
     if new_image and new_image.filename != '':
@@ -444,7 +451,7 @@ def delete_item(item_id):
 
     if not is_admin_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -479,7 +486,7 @@ def admin_profile():
 
     if not is_admin_logged_in():
         flash("Please login!", "danger")
-        return redirect('/admin-login')
+        return redirect('/login')
 
     admin_id = session['admin_id']
 
@@ -493,7 +500,6 @@ def admin_profile():
         conn.close()
         return render_template('admin/admin_profile.html', admin=admin)
 
-    # POST — update profile
     name         = request.form['name'].strip()
     email        = request.form['email'].strip().lower()
     new_password = request.form.get('password', '').strip()
@@ -502,10 +508,8 @@ def admin_profile():
     old_image_name   = admin.get('profile_image')
     final_image_name = old_image_name
 
-    # Password: only update if a new one was provided
     hashed_pw = hash_password(new_password) if new_password else admin['password']
 
-    # Image handling
     if new_image and new_image.filename != '':
         new_filename = secure_filename(new_image.filename)
         new_image.save(os.path.join(app.config['ADMIN_UPLOAD_FOLDER'], new_filename))
@@ -567,80 +571,31 @@ def user_register():
     conn.close()
 
     flash("Registration successful! Please login.", "success")
-    return redirect('/user-login')
+    return redirect('/login')
 
 
 # =================================================================
-# ROUTE 17: USER LOGIN
-# =================================================================
-@app.route('/user-login', methods=['GET', 'POST'])
-def user_login():
-
-    if request.method == 'GET':
-        return render_template('user/user_login.html')
-
-    email    = request.form['email'].strip().lower()
-    password = request.form['password']
-
-    conn   = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
-    user = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not user:
-        flash("Email not found!", "danger")
-        return redirect('/user-login')
-
-    # ✅ FIX: use helper — avoids double-encoding bug from original
-    if not check_password(password, user['password']):
-        flash("Incorrect password!", "danger")
-        return redirect('/user-login')
-
-    session['user_id']    = user['user_id']
-    session['user_name']  = user['name']
-    session['user_email'] = user['email']
-
-    flash("Login successful!", "success")
-    return redirect('/user-dashboard')
-
-
-# =================================================================
-# ROUTE 18: USER DASHBOARD
+# ROUTE 17: USER DASHBOARD
 # =================================================================
 @app.route('/user-dashboard')
 def user_dashboard():
 
     if not is_user_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     return render_template('user/user_home.html', user_name=session['user_name'])
 
 
 # =================================================================
-# ROUTE 19: USER LOGOUT
-# =================================================================
-@app.route('/user-logout')
-def user_logout():
-
-    for key in ('user_id', 'user_name', 'user_email'):
-        session.pop(key, None)
-
-    flash("Logged out successfully!", "success")
-    return redirect('/user-login')
-
-
-# =================================================================
-# ROUTE 20: USER PRODUCTS (Browse + Filter)
+# ROUTE 18: USER PRODUCTS (Browse + Filter)
 # =================================================================
 @app.route('/user/products')
 def user_products():
 
     if not is_user_logged_in():
         flash("Please login!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     search          = request.args.get('search', '').strip()
     category_filter = request.args.get('category', '').strip()
@@ -676,14 +631,14 @@ def user_products():
 
 
 # =================================================================
-# ROUTE 21: PRODUCT DETAILS
+# ROUTE 19: PRODUCT DETAILS
 # =================================================================
 @app.route('/user/product/<int:product_id>')
 def user_product_details(product_id):
 
     if not is_user_logged_in():
         flash("Please login!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -700,14 +655,14 @@ def user_product_details(product_id):
 
 
 # =================================================================
-# ROUTE 22: ADD TO CART
+# ROUTE 20: ADD TO CART
 # =================================================================
 @app.route('/user/add-to-cart/<int:product_id>')
 def add_to_cart(product_id):
 
     if not is_user_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     if 'cart' not in session:
         session['cart'] = {}
@@ -743,14 +698,14 @@ def add_to_cart(product_id):
 
 
 # =================================================================
-# ROUTE 23: VIEW CART
+# ROUTE 21: VIEW CART
 # =================================================================
 @app.route('/user/cart')
 def view_cart():
 
     if not is_user_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     cart        = session.get('cart', {})
     grand_total = sum(i['price'] * i['quantity'] for i in cart.values())
@@ -759,7 +714,7 @@ def view_cart():
 
 
 # =================================================================
-# ROUTE 24: INCREASE QUANTITY
+# ROUTE 22: INCREASE QUANTITY
 # =================================================================
 @app.route('/user/cart/increase/<pid>')
 def increase_quantity(pid):
@@ -772,7 +727,7 @@ def increase_quantity(pid):
 
 
 # =================================================================
-# ROUTE 25: DECREASE QUANTITY
+# ROUTE 23: DECREASE QUANTITY
 # =================================================================
 @app.route('/user/cart/decrease/<pid>')
 def decrease_quantity(pid):
@@ -787,7 +742,7 @@ def decrease_quantity(pid):
 
 
 # =================================================================
-# ROUTE 26: REMOVE ITEM FROM CART
+# ROUTE 24: REMOVE ITEM FROM CART
 # =================================================================
 @app.route('/user/cart/remove/<pid>')
 def remove_from_cart(pid):
@@ -801,22 +756,22 @@ def remove_from_cart(pid):
 
 
 # =================================================================
-# ROUTE 27: CHECKOUT — Create Razorpay Order
+# ROUTE 25: CHECKOUT — Create Razorpay Order
 # =================================================================
 @app.route('/checkout')
 def checkout():
 
     if not is_user_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     cart = session.get('cart', {})
     if not cart:
         flash("Cart is empty!", "danger")
         return redirect('/user/products')
 
-    grand_total      = sum(i['price'] * i['quantity'] for i in cart.values())
-    amount_in_paise  = int(grand_total * 100)
+    grand_total     = sum(i['price'] * i['quantity'] for i in cart.values())
+    amount_in_paise = int(grand_total * 100)
 
     payment_order = razorpay_client.order.create({
         'amount':          amount_in_paise,
@@ -833,35 +788,18 @@ def checkout():
 
 
 # =================================================================
-# ROUTE 28: PAYMENT SUCCESS — Verify Signature + Save Order
-# ✅ FIX: Original had no verification; anyone could hit this URL
+# ROUTE 26: PAYMENT SUCCESS
 # =================================================================
-@app.route('/payment-success', methods=['GET', 'POST'])
-def payment_success():
-
-    # Clear cart
-    session.pop('cart', None)
-
-    return '''
-
-    <h1>Payment Successful!</h1>
-
-    <a href="/user/products">
-        Continue Shopping
-    </a>
-
-    '''
+@app.route('/payment-success', methods=['POST'])
 def payment_success():
 
     if not is_user_logged_in():
-        return redirect('/user-login')
+        return redirect('/login')
 
-    # Razorpay sends these fields on successful payment
     razorpay_order_id   = request.form.get('razorpay_order_id')
     razorpay_payment_id = request.form.get('razorpay_payment_id')
     razorpay_signature  = request.form.get('razorpay_signature')
 
-    # ✅ Verify payment signature
     params = {
         'razorpay_order_id':   razorpay_order_id,
         'razorpay_payment_id': razorpay_payment_id,
@@ -874,14 +812,12 @@ def payment_success():
         flash("Payment verification failed! Please contact support.", "danger")
         return redirect('/user/cart')
 
-    # ✅ Save order to database
     cart        = session.get('cart', {})
     grand_total = sum(i['price'] * i['quantity'] for i in cart.values())
 
     conn   = get_db_connection()
     cursor = conn.cursor()
 
-    # Insert into orders table
     cursor.execute(
         """INSERT INTO orders (user_id, razorpay_order_id, razorpay_payment_id, total_amount, status)
            VALUES (%s, %s, %s, %s, 'paid')""",
@@ -889,7 +825,6 @@ def payment_success():
     )
     order_db_id = cursor.lastrowid
 
-    # Insert each cart item into order_items table
     for pid, item in cart.items():
         cursor.execute(
             """INSERT INTO order_items (order_id, product_id, quantity, price)
@@ -901,7 +836,6 @@ def payment_success():
     cursor.close()
     conn.close()
 
-    # Clear cart
     session.pop('cart', None)
 
     flash("Payment Successful! Your order has been placed.", "success")
@@ -909,14 +843,14 @@ def payment_success():
 
 
 # =================================================================
-# ROUTE 29: USER ORDER HISTORY
+# ROUTE 27: USER ORDER HISTORY
 # =================================================================
 @app.route('/user/orders')
 def user_orders():
 
     if not is_user_logged_in():
         flash("Please login first!", "danger")
-        return redirect('/user-login')
+        return redirect('/login')
 
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
