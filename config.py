@@ -6,7 +6,7 @@
 # details, Email settings, Razorpay keys etc.
 # ------------------------------------
 
-SECRET_KEY = "CHANTI"  # used for sessions
+SECRET_KEY = ""  # used for sessions
 
 # MySQL Database Configuration
 import os
@@ -31,10 +31,10 @@ DB_PORT = int(os.getenv("DB_PORT", 3306))
 MAIL_SERVER = 'smtp.gmail.com'
 MAIL_PORT = 587
 MAIL_USE_TLS = True
-MAIL_USERNAME = 'mushamsaikrishna4@gmail.com'
-MAIL_PASSWORD = 'fzpn sssf xmzn zkzg'   # Gmail App Password
+MAIL_USERNAME = ''
+MAIL_PASSWORD = ''   # Gmail App Password
 
 
 # Razorpay Configuration
-RAZORPAY_KEY_ID = "rzp_test_Sq2lxd6i9ukhJO"
-RAZORPAY_KEY_SECRET = "bO6zXHc0BbqehgYUTHInap0W"
+RAZORPAY_KEY_ID = ""
+RAZORPAY_KEY_SECRET = ""
